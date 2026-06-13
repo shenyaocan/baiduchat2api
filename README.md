@@ -83,6 +83,33 @@ api_keys = ["sk-your-secret-key"]
 -H "Authorization: Bearer sk-your-secret-key"
 ```
 
+Docker 一键部署：
+```bash
+docker compose up -d --build
+```
+
+多 Cookie 负载均衡：
+```toml
+[cookies]
+values = [
+  "BAIDUID=xxx; BIDUPSID=xxx; ...",
+  "BAIDUID=yyy; BIDUPSID=yyy; ..."
+]
+```
+
+服务端会为每个 Cookie 建立独立客户端，并按当前并发数均衡分发。某个 Cookie 不可用时会立即刷新当前会话并重试，仍失败则自动切到下一个 Cookie。
+
+上下文压缩与新窗口：
+```toml
+[context]
+fresh_conversation = true
+max_chars = 12000
+max_messages = 16
+max_message_chars = 2000
+```
+
+每次请求都会使用新的百度对话窗口；OpenAI `messages` 会在本地压缩后作为单次 prompt 发送，避免百度侧上下文串线。
+
 ### 4. API 调用示例
 ```bash
 curl http://localhost:8000/v1/chat/completions \

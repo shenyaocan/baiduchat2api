@@ -9,6 +9,7 @@ import requests
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from main import app, client as main_client
 from baidu_chat import BaiduChatClient
+from tool_calling import messages_to_prompt
 
 
 def find_free_port():
@@ -38,6 +39,17 @@ def test_flask_server():
         yield {"type": "done", "content": ""}
 
     mock_client.chat_stream_text = fake_stream
+
+    def fake_chunks(query, model="smart", deep_search=False, internet_search=False):
+        for chunk in fake_stream(query, model, deep_search, internet_search):
+            if chunk["type"] == "text":
+                yield {"type": "content", "content": chunk["content"]}
+            elif chunk["type"] == "thinking":
+                yield {"type": "reasoning_content", "content": chunk["content"]}
+            elif chunk["type"] == "done":
+                break
+
+    mock_client.chat_to_openai_chunks = fake_chunks
 
     # Patch the global client in main module
     import main as main_mod
@@ -187,6 +199,18 @@ def test_flask_server():
             "status": r.status_code,
         })
         main_mod.api_keys = set()
+
+        compressed = messages_to_prompt(
+            [{"role": "user", "content": "old-" + ("x" * 200)}, {"role": "user", "content": "new"}],
+            max_chars=80,
+            max_messages=2,
+            max_message_chars=40,
+        )
+        results.append({
+            "test": "context_compact",
+            "contains_new": "new" in compressed,
+            "is_limited": len(compressed) <= 80,
+        })
 
     return results
 

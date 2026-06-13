@@ -209,6 +209,24 @@ class BaiduChatClient:
         self._ori_lid = None
         self._get_base_data()
 
+    def start_new_conversation(self):
+        self._token = None
+        self._lid = None
+        self._ori_lid = None
+        self._get_base_data()
+
+    def _should_refresh_response(self, resp) -> bool:
+        if resp.status_code in (401, 403):
+            return True
+        if resp.status_code not in (400, 429):
+            return False
+        try:
+            body = resp.text[:1000].lower()
+        except Exception:
+            return False
+        markers = ("cookie", "login", "unauthorized", "forbidden", "verify", "captcha", "登录")
+        return any(marker in body for marker in markers)
+
     # ------------------------------------------------------------------
     # Base data (token + lid + auto cookies) — with strict timeout
     # ------------------------------------------------------------------
@@ -394,9 +412,9 @@ class BaiduChatClient:
         except requests.exceptions.ConnectionError as e:
             raise RuntimeError(f"Connection error to Baidu conversation API: {e}")
 
-        # Auth retry
-        if resp.status_code in (401, 403):
-            _log("WARN", f"HTTP {resp.status_code} — refreshing cookies and retrying once")
+        # Cookie/auth retry
+        if self._should_refresh_response(resp):
+            _log("WARN", f"HTTP {resp.status_code} indicates unusable cookies — refreshing and retrying once")
             resp.close()
             self._refresh_cookies()
             payload = self._build_message_payload(query, model, deep_search, internet_search, rank)

@@ -32,6 +32,14 @@ cookie_file = "cookies.json"
 # 是否自动保存获取到的 Cookie
 auto_save_cookies = true
 
+[context]
+# 每次请求都使用新的百度对话窗口，避免不同请求的服务端会话状态串线。
+fresh_conversation = true
+# 本地压缩 OpenAI messages 后再发给百度，避免长上下文拖慢或混乱。
+max_chars = 12000
+max_messages = 16
+max_message_chars = 2000
+
 [options]
 # Default settings
 default_model = "ernie-4.5"

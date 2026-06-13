@@ -5,7 +5,8 @@ import json
 from typing import Optional, Dict, Any
 
 from flask import Flask, request, jsonify, Response
-from baidu_chat import BaiduChatClient, _log
+from baidu_chat import _log
+from client_pool import BaiduClientPool
 from tool_calling import messages_to_prompt, parse_tool_calls
 
 
@@ -39,8 +40,13 @@ def load_config(path: str = "config.toml") -> Dict[str, Any]:
 # ------------------------------------------------------------------
 app = Flask(__name__)
 app.config['JSON_AS_ASCII'] = True
-client: Optional[BaiduChatClient] = None
+client: Optional[BaiduClientPool] = None
 api_keys: set[str] = set()
+context_options: Dict[str, Any] = {
+    "context_max_chars": 12000,
+    "context_max_messages": 16,
+    "context_max_message_chars": 2000,
+}
 
 
 MODEL_LIST = [
@@ -89,12 +95,22 @@ def _resolve_server_config(config: Dict[str, Any], host: str, port: int) -> tupl
 
 def _resolve_client_config(config: Dict[str, Any]) -> Dict[str, Any]:
     cookies_cfg = config.get("cookies", {})
-    cookies = cookies_cfg.get("value", "") if isinstance(cookies_cfg, dict) else str(cookies_cfg)
+    cookie_values = []
+    if isinstance(cookies_cfg, dict):
+        values = cookies_cfg.get("values")
+        value = cookies_cfg.get("value", "")
+        if isinstance(values, list):
+            cookie_values.extend(str(item).strip() for item in values if str(item).strip())
+        if value:
+            cookie_values.append(str(value).strip())
+    elif cookies_cfg:
+        cookie_values.append(str(cookies_cfg).strip())
     headers_cfg = config.get("headers", {})
     persistence_cfg = config.get("cookie_persistence", {})
+    context_cfg = config.get("context", {})
 
     return {
-        "cookies": cookies or None,
+        "cookie_values": cookie_values,
         "user_agent": headers_cfg.get("user_agent") if isinstance(headers_cfg, dict) else None,
         "cookie_file": (
             persistence_cfg.get("cookie_file")
@@ -105,6 +121,14 @@ def _resolve_client_config(config: Dict[str, Any]) -> Dict[str, Any]:
             persistence_cfg.get("auto_save_cookies")
             if isinstance(persistence_cfg, dict)
             else config.get("auto_save_cookies", True)
+        ),
+        "context_max_chars": int(context_cfg.get("max_chars", 12000)) if isinstance(context_cfg, dict) else 12000,
+        "context_max_messages": int(context_cfg.get("max_messages", 16)) if isinstance(context_cfg, dict) else 16,
+        "context_max_message_chars": int(context_cfg.get("max_message_chars", 2000)) if isinstance(context_cfg, dict) else 2000,
+        "fresh_conversation": bool(
+            context_cfg.get("fresh_conversation", True)
+            if isinstance(context_cfg, dict)
+            else True
         ),
     }
 
@@ -162,7 +186,14 @@ def chat_completions():
 
     baidu_model = MODEL_MAP.get(model, "ernie-4.5")
     deep_search = bool(req.get("deep_search", False))
-    query = messages_to_prompt(messages, tools if isinstance(tools, list) else [], tool_choice)
+    query = messages_to_prompt(
+        messages,
+        tools if isinstance(tools, list) else [],
+        tool_choice,
+        max_chars=int(context_options["context_max_chars"]),
+        max_messages=int(context_options["context_max_messages"]),
+        max_message_chars=int(context_options["context_max_message_chars"]),
+    )
 
     if not query:
         return _error("No user message found")
@@ -333,22 +364,28 @@ def _handle_sync(query: str, baidu_model: str, deep_search: bool, display_model:
 # Startup
 # ------------------------------------------------------------------
 def run_server(host: str = "0.0.0.0", port: int = 8000, config: Optional[Dict[str, Any]] = None):
-    global client, api_keys
+    global client, api_keys, context_options
     config = config or {}
 
     host, port = _resolve_server_config(config, host, port)
     client_cfg = _resolve_client_config(config)
     api_keys = _resolve_api_keys(config)
+    context_options = {
+        "context_max_chars": client_cfg["context_max_chars"],
+        "context_max_messages": client_cfg["context_max_messages"],
+        "context_max_message_chars": client_cfg["context_max_message_chars"],
+    }
 
-    client = BaiduChatClient(
-        cookies=client_cfg["cookies"],
+    client = BaiduClientPool(
+        cookie_values=client_cfg["cookie_values"],
         user_agent=client_cfg["user_agent"],
         cookie_file=client_cfg["cookie_file"],
         auto_save_cookies=bool(client_cfg["auto_save_cookies"]),
+        fresh_conversation=bool(client_cfg["fresh_conversation"]),
     )
 
     _log("INFO", f"Flask server starting at http://{host}:{port}")
-    cookie_mode = "user-provided" if client_cfg["cookies"] else f"auto-fetch + file={client_cfg['cookie_file']}"
+    cookie_mode = f"user-provided pool={len(client_cfg['cookie_values'])}" if client_cfg["cookie_values"] else f"auto-fetch + file={client_cfg['cookie_file']}"
     _log("INFO", f"Cookie mode: {cookie_mode}")
     _log("INFO", f"Auth: {'enabled' if api_keys else 'disabled'}")
     _log("INFO", "Models: baidu-ernie-4.5[-think], baidu-deepseek-r1[-think], baidu-deepseek-v4-pro[-think]")

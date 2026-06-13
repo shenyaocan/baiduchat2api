@@ -52,6 +52,9 @@ def messages_to_prompt(
     messages: List[Dict[str, Any]],
     tools: List[Dict[str, Any]] | None = None,
     tool_choice: Any = None,
+    max_chars: int = 12000,
+    max_messages: int = 16,
+    max_message_chars: int = 2000,
 ) -> str:
     if not isinstance(messages, list):
         return ""
@@ -60,7 +63,8 @@ def messages_to_prompt(
     if tools:
         parts.append(f"System: {build_tool_system_prompt(tools, tool_choice)}")
 
-    for msg in messages:
+    compacted = compact_messages(messages, max_messages=max_messages, max_message_chars=max_message_chars)
+    for msg in compacted:
         if not isinstance(msg, dict):
             continue
         role = msg.get("role", "user")
@@ -76,7 +80,33 @@ def messages_to_prompt(
             tool_name = msg.get("name") or msg.get("tool_call_id") or "tool"
             parts[-1] = f"Tool({tool_name}): {content}" if content else parts[-1]
 
-    return "\n\n".join(parts).strip()
+    prompt = "\n\n".join(parts).strip()
+    if max_chars > 0 and len(prompt) > max_chars:
+        prompt = _fit_prompt(prompt, max_chars)
+    return prompt
+
+
+def compact_messages(
+    messages: List[Dict[str, Any]],
+    max_messages: int = 16,
+    max_message_chars: int = 2000,
+) -> List[Dict[str, Any]]:
+    valid = [msg for msg in messages if isinstance(msg, dict)]
+    if not valid:
+        return []
+
+    system_messages = [msg for msg in valid if msg.get("role") == "system"]
+    non_system = [msg for msg in valid if msg.get("role") != "system"]
+    recent = non_system[-max_messages:] if max_messages > 0 else non_system
+
+    compacted = []
+    for msg in system_messages + recent:
+        copied = dict(msg)
+        content = _content_to_text(copied.get("content", ""))
+        if max_message_chars > 0 and len(content) > max_message_chars:
+            copied["content"] = _clip_middle(content, max_message_chars)
+        compacted.append(copied)
+    return compacted
 
 
 def _content_to_text(content: Any) -> str:
@@ -89,6 +119,22 @@ def _content_to_text(content: Any) -> str:
                 texts.append(str(item.get("text", "")))
         return "\n".join(text for text in texts if text)
     return ""
+
+
+def _clip_middle(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    if limit <= 20:
+        return text[:limit]
+    head = limit // 2
+    tail = limit - head - 18
+    return f"{text[:head]}\n...[compressed]...\n{text[-tail:]}"
+
+
+def _fit_prompt(prompt: str, max_chars: int) -> str:
+    if len(prompt) <= max_chars:
+        return prompt
+    return _clip_middle(prompt, max_chars)
 
 
 def _format_tool_choice(tool_choice: Any) -> str:
