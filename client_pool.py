@@ -47,6 +47,14 @@ class BaiduClientPool:
         with self._lock:
             self._inflight[idx] = max(0, self._inflight[idx] - 1)
 
+    @property
+    def last_hint(self) -> Optional[str]:
+        """Return the most recent Baidu hint from any client in the pool."""
+        for c in self._clients:
+            if getattr(c, '_last_hint', None):
+                return c._last_hint
+        return None
+
     def chat_to_openai_chunks(
         self,
         query: str,
