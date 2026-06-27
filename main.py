@@ -1,4 +1,6 @@
 import os
+import re
+import sys
 import time
 import argparse
 import json
@@ -83,6 +85,49 @@ MODEL_MAP = {
 
 def _error(message: str, status: int = 400, err_type: str = "invalid_request"):
     return jsonify({"error": {"message": message, "type": err_type}}), status
+
+
+# ------------------------------------------------------------------
+# Error detection & auto-restart
+# ------------------------------------------------------------------
+_BAIDU_ERROR_MARKERS = ("抱歉", "出了点小问题", "请稍后重试")
+
+
+def _is_baidu_error_hint(hint: str) -> bool:
+    if not hint:
+        return False
+    return all(marker in hint for marker in _BAIDU_ERROR_MARKERS)
+
+
+def reset_and_restart():
+    """Clear config.toml cookie value, delete cookies.json, and restart the process."""
+    _log("WARN", "🔄 Auto-recovery: resetting cookies and restarting...")
+
+    # 1. Clear value in config.toml
+    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.toml")
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        content = re.sub(r'(value\s*=\s*)"[^"]*"', r'\1""', content)
+        with open(config_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        _log("INFO", "Cleared value in config.toml")
+    except Exception as e:
+        _log("ERROR", f"Failed to clear config.toml: {e}")
+
+    # 2. Delete cookies.json
+    cookies_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.json")
+    try:
+        if os.path.exists(cookies_path):
+            os.remove(cookies_path)
+            _log("INFO", "Deleted cookies.json")
+    except Exception as e:
+        _log("ERROR", f"Failed to delete cookies.json: {e}")
+
+    # 3. Restart process
+    _log("WARN", "⏳ Restarting in 2 seconds...")
+    time.sleep(2)
+    os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
 def _resolve_server_config(config: Dict[str, Any], host: str, port: int) -> tuple[str, int]:
@@ -258,6 +303,15 @@ def _handle_stream(query: str, baidu_model: str, deep_search: bool, display_mode
                         }],
                     })
 
+            # Detect Baidu error hint (empty content + specific hint pattern)
+            hint = getattr(client, 'last_hint', None) or ""
+            if not content_parts and _is_baidu_error_hint(hint):
+                _log("WARN", f"Baidu error hint detected: {hint}")
+                yield _sse({"error": {"message": hint, "type": "baidu_error"}})
+                yield "data: [DONE]\n\n"
+                reset_and_restart()
+                return
+
             parsed_content, tool_calls = parse_tool_calls("".join(content_parts))
             if tool_calls:
                 if parsed_content:
@@ -313,6 +367,8 @@ def _handle_stream(query: str, baidu_model: str, deep_search: bool, display_mode
         except Exception as e:
             _log("ERROR", f"Stream error: {e}")
             yield _sse({"error": str(e)})
+            if _is_baidu_error_hint(str(e)):
+                reset_and_restart()
             return
 
         yield _sse({
@@ -357,6 +413,8 @@ def _handle_sync(query: str, baidu_model: str, deep_search: bool, display_model:
         })
     except Exception as e:
         _log("ERROR", f"Sync error: {e}")
+        if _is_baidu_error_hint(str(e)):
+            reset_and_restart()
         return jsonify({"error": {"message": str(e), "type": "internal_error"}}), 500
 
 
